@@ -8,6 +8,7 @@ import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisData;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -35,6 +36,9 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private  StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private CacheClient cacheClient;
+
     /**
      * 查询店铺id
      * @param id
@@ -44,9 +48,11 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     public Result queryById(Long id) {
         //解决缓存穿透方案
         //Shop shop = queryWithPassThrough(id);
+        //Shop shop = cacheClient.queryWithPassThrough(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
+        Shop shop = cacheClient.queryWithLogicalExpire(CACHE_SHOP_KEY, LOCK_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
         //解决缓存击穿方案——互斥锁
-        Shop shop = queryWithMutex(id);
+        //Shop shop = queryWithMutex(id);
 
         //解决缓存击穿方案——逻辑过期
         //Shop shop = queryWithLogicalExpire(id);
@@ -94,6 +100,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             redisData = JSONUtil.toBean(shopJson, RedisData.class);
             expireTime = redisData.getExpireTime();
             if(expireTime.isAfter(LocalDateTime.now())){
+                shop = JSONUtil.toBean((JSONObject) redisData.getData(), Shop.class);
                 return shop;
             }
             //6.3.成功，开启独立线程，实现缓存重建
@@ -192,38 +199,38 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return shop;
     }
 
-    /**
-     * 封装
-     * 解决缓存穿透方案
-     * @param id
-     * @return
-     */
-    public Shop queryWithPassThrough(Long id){
-        String key = CACHE_SHOP_KEY + id;
-        //1.从Redis中查询缓存
-        String shopJson = stringRedisTemplate.opsForValue().get(key);
-        //2.判断是否存在
-        if(StrUtil.isNotBlank(shopJson)){
-            //3.存在则返回
-            Shop shop = JSONUtil.toBean(shopJson, Shop.class);
-            return shop;
-        }
-        //判断命中的是否为空串
-        if(shopJson != null){
-            return null;
-        }
-        //4.不存在，根据id从数据库中查询
-        Shop shop = getById(id);
-        if(shop == null){
-            //5.不存在，返回错误
-            stringRedisTemplate.opsForValue().set(key, "",CACHE_NULL_TTL, TimeUnit.MINUTES);
-            return null;
-        }
-        //6.存在，写入Redis内存
-        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop),CACHE_SHOP_TTL, TimeUnit.MINUTES);
-        //7.返回
-        return shop;
-    }
+    ///**
+    // * 封装
+    // * 解决缓存穿透方案
+    // * @param id
+    // * @return
+    // */
+    //public Shop queryWithPassThrough(Long id){
+    //    String key = CACHE_SHOP_KEY + id;
+    //    //1.从Redis中查询缓存
+    //    String shopJson = stringRedisTemplate.opsForValue().get(key);
+    //    //2.判断是否存在
+    //    if(StrUtil.isNotBlank(shopJson)){
+    //        //3.存在则返回
+    //        Shop shop = JSONUtil.toBean(shopJson, Shop.class);
+    //        return shop;
+    //    }
+    //    //判断命中的是否为空串
+    //    if(shopJson != null){
+    //        return null;
+    //    }
+    //    //4.不存在，根据id从数据库中查询
+    //    Shop shop = getById(id);
+    //    if(shop == null){
+    //        //5.不存在，返回错误
+    //        stringRedisTemplate.opsForValue().set(key, "",CACHE_NULL_TTL, TimeUnit.MINUTES);
+    //        return null;
+    //    }
+    //    //6.存在，写入Redis内存
+    //    stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop),CACHE_SHOP_TTL, TimeUnit.MINUTES);
+    //    //7.返回
+    //    return shop;
+    //}
 
     /**
      * 上锁
