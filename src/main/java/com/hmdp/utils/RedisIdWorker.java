@@ -1,6 +1,7 @@
 package com.hmdp.utils;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
@@ -10,7 +11,9 @@ import java.time.format.DateTimeFormatter;
 /**
  * 全局ID生成器
  */
+@Component
 public class RedisIdWorker {
+
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
