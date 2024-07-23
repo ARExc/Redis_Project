@@ -8,8 +8,11 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +35,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -52,14 +57,37 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         //先提交事务，再释放锁，防止这两者间隙的线程不安全
         Long userId = UserHolder.getUser().getId();
-        //以用户ID为锁对象，减少锁定资源的范围
-        synchronized (userId.toString().intern()) {
+        //创建锁对象，以用户ID为锁对象，减少锁定资源的范围
+        SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        //获取锁
+        boolean isLock = lock.tryLock(5);
+        //判断锁是否获取成功
+        if (!isLock) {
+            return Result.fail("不允许重复下单！");
+        }
+        try {
             //在该方法中直接用this对象调用方法并不会启用该对象的动态代理类对象，也不会使用事务管理方法
             //return this.createVoucherOrder(voucherId);
+            //所以以下列方式调用事务方法
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
-
+        } catch (IllegalStateException e) {
+            throw new RuntimeException(e);
+        } finally {
+            //千万别忘了释放锁
+            lock.unlock();
         }
+
+        ////先提交事务，再释放锁，防止这两者间隙的线程不安全
+        //Long userId = UserHolder.getUser().getId();
+        ////以用户ID为锁对象，减少锁定资源的范围
+        //synchronized (userId.toString().intern()) {
+        //    //在该方法中直接用this对象调用方法并不会启用该对象的动态代理类对象，也不会使用事务管理方法
+        //    //return this.createVoucherOrder(voucherId);
+        //    IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+        //    return proxy.createVoucherOrder(voucherId);
+        //
+        //}
     }
 
     @Transactional
