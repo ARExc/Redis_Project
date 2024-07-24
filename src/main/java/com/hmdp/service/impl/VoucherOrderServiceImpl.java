@@ -14,12 +14,15 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
 
 /**
  * <p>
@@ -44,57 +47,36 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setResultType(Long.class);
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+    }
+
     @Override
     public Result seckillVoucher(Long voucherId) {
-        //1.查询优惠券
-        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        //2.判断秒杀是否开始
-        if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
-            return Result.fail("秒杀尚未开始！");
-        }
-        //3.判断秒杀是否结束
-        if (voucher.getEndTime().isBefore(LocalDateTime.now())) {
-            return Result.fail("秒杀已经结束！");
-        }
-        //4.判断库存是否充足
-        if (voucher.getStock() < 1) {
-            return Result.fail("库存不足！");
-        }
-
-        //先提交事务，再释放锁，防止这两者间隙的线程不安全
+        //获取用户id
         Long userId = UserHolder.getUser().getId();
-        //创建锁对象，以用户ID为锁对象，减少锁定资源的范围
-        //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
-        RLock lock = redissonClient.getLock("lock:order:" + userId);
-        //获取锁
-        boolean isLock = lock.tryLock();
-        //判断锁是否获取成功
-        if (!isLock) {
-            return Result.fail("不允许重复下单！");
+        //1.执行lua脚本
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(), userId.toString()
+        );
+        //2.判断结果是否为0
+        int r = result.intValue();
+        if(r != 0){
+            //2.1.不为0，代表没有购买资格
+            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
         }
-        try {
-            //在该方法中直接用this对象调用方法并不会启用该对象的动态代理类对象，也不会使用事务管理方法
-            //return this.createVoucherOrder(voucherId);
-            //所以以下列方式调用事务方法
-            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
-            return proxy.createVoucherOrder(voucherId);
-        } catch (IllegalStateException e) {
-            throw new RuntimeException(e);
-        } finally {
-            //千万别忘了释放锁
-            lock.unlock();
-        }
+        //2.2.为0，有购买资格，把下单信息保存到阻塞队列
+        long orderId = redisIdWorker.nextId("order");
+        // TODO 保存到阻塞队列
 
-        ////先提交事务，再释放锁，防止这两者间隙的线程不安全
-        //Long userId = UserHolder.getUser().getId();
-        ////以用户ID为锁对象，减少锁定资源的范围
-        //synchronized (userId.toString().intern()) {
-        //    //在该方法中直接用this对象调用方法并不会启用该对象的动态代理类对象，也不会使用事务管理方法
-        //    //return this.createVoucherOrder(voucherId);
-        //    IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
-        //    return proxy.createVoucherOrder(voucherId);
-        //
-        //}
+        //3.返回订单id
+        return Result.ok();
     }
 
     @Transactional
